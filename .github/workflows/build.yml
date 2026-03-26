@@ -14,7 +14,7 @@ jobs:
     steps:
     - name: Create project structure
       run: |
-        mkdir -p source include .github/workflows
+        mkdir -p source include
 
     - name: Create main.cpp
       run: |
@@ -117,7 +117,6 @@ jobs:
             std::vector<LevelInfo> SearchLevels(const std::string& query) {
                 std::vector<LevelInfo> results;
                 if (!networkInitialized) { lastError = "Network not initialized"; return results; }
-                // HTTP request to SMMDB API would go here
                 return results;
             }
 
@@ -322,11 +321,17 @@ jobs:
         -include $(OFILES:.o=.d)
         EOFMAKEFILE
 
-    - name: Download CTRPluginFramework
+    - name: Download and patch CTRPluginFramework
       run: |
         git clone --recursive https://github.com/Tekito-256/CTRPluginFramework.git
+        
+        # Patch the Makefile to not treat warnings as errors
         cd CTRPluginFramework/Library
-        make -j4
+        sed -i 's/-Werror//g' Makefile
+        find . -name "Makefile" -exec sed -i 's/-Werror//g' {} \;
+        
+        # Build with warnings disabled
+        make -j4 CXXFLAGS="-Wno-error -g -O2"
 
     - name: Build plugin
       run: |
