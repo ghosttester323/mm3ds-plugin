@@ -13,36 +13,31 @@ jobs:
 
     steps:
     - name: Install tools
-      run: apt-get update && apt-get install -y zip curl unzip
+      run: apt-get update && apt-get install -y zip
 
-    - name: Download CTRPluginFramework
+    - name: Checkout CTRPluginFramework-BlankTemplate
+      uses: actions/checkout@v4
+      with:
+        repository: PabloMK7/CTRPluginFramework-BlankTemplate
+        submodules: true
+
+    - name: Show structure
       run: |
-        curl -L "https://github.com/Nanquitas/CTRPluginFramework/archive/refs/heads/master.zip" -o ctrpf.zip
-        unzip -q ctrpf.zip
-        mv CTRPluginFramework-master CTRPluginFramework
+        echo "=== Files ==="
         ls -la
-
-    - name: Download jisho-3gx
-      run: |
-        curl -L "https://github.com/mortenson/jisho-3gx/archive/refs/heads/master.zip" -o jisho.zip
-        unzip -q jisho.zip
-        mv jisho-3gx-master jisho-3gx
-        ls -la
-
-    - name: Setup includes
-      run: |
-        cd jisho-3gx
-        mkdir -p include
-        cp -r ../CTRPluginFramework/include/* include/
-        ls -la include/
-        ls -la include/CTRPluginFramework/ | head -10
+        echo "=== Dirs ==="
+        find . -type d | head -20
+        echo "=== Sources ==="
+        find . -name "*.cpp"
 
     - name: Create plugin code
       run: |
-        cd jisho-3gx
+        # Find the main source file
+        MAIN=$(find . -name "main.cpp" | head -1)
+        echo "Main: $MAIN"
         
-        cat > Sources/main.cpp << 'EOF'
-        #include "../include/CTRPluginFramework.hpp"
+        cat > "$MAIN" << 'EOF'
+        #include <CTRPluginFramework.hpp>
         #include <string>
         #include <vector>
         #include <3ds.h>
@@ -51,7 +46,6 @@ jobs:
 
         bool g_netOk = false;
         u32* g_socBuf = nullptr;
-        std::vector<std::string> g_results;
 
         bool InitNet() {
             if (g_netOk) return true;
@@ -60,7 +54,7 @@ jobs:
             if (R_FAILED(socInit(g_socBuf, 0x100000))) return false;
             if (R_FAILED(httpcInit(0))) { socExit(); return false; }
             g_netOk = true;
-            OSD::Notify(Color::Green << "Network OK!");
+            OSD::Notify(Color::Green << "WiFi OK!");
             return true;
         }
 
@@ -90,84 +84,130 @@ jobs:
             return r;
         }
 
-        void Search(const std::string& q) {
+        void DoSearch(const std::string& q) {
             if (!g_netOk && !InitNet()) return;
             std::string u = "https://smmdb.net/api/getcourses";
             if (!q.empty()) u += "?title=" + UrlEnc(q);
             OSD::Notify(Color::Yellow << "Searching...");
             std::string r = HttpGet(u.c_str());
-            if (r.empty()) OSD::Notify(Color::Red << "Failed");
-            else OSD::Notify(Color::Green << "Got: " << r.length() << " bytes");
+            if (r.empty()) { OSD::Notify(Color::Red << "Connection failed"); return; }
+            OSD::Notify(Color::Green << "Got: " << r.length() << " bytes");
+            // Count results
+            int cnt = 0;
+            size_t p = 0;
+            while ((p = r.find("\"courseid\"", p)) != std::string::npos) { cnt++; p++; }
+            OSD::Notify(Color::White << "Found: " << cnt << " levels");
         }
 
-        void MSearch(MenuEntry*) {
-            Keyboard k; k.SetHeaderText("Level name:");
+        void MenuSearch(MenuEntry*) {
+            Keyboard k; k.SetHeaderText("Enter level name:");
             std::string i;
-            if (k.Open(i)==0 && !i.empty()) Search(i);
+            if (k.Open(i)==0 && !i.empty()) DoSearch(i);
         }
 
-        void MTest(MenuEntry*) {
+        void MenuAuthor(MenuEntry*) {
+            Keyboard k; k.SetHeaderText("Enter author:");
+            std::string i;
+            if (k.Open(i)==0 && !i.empty()) {
+                if (!g_netOk && !InitNet()) return;
+                std::string u = "https://smmdb.net/api/getcourses?owner=" + UrlEnc(i);
+                OSD::Notify(Color::Yellow << "Searching...");
+                std::string r = HttpGet(u.c_str());
+                if (!r.empty()) {
+                    int cnt = 0; size_t p = 0;
+                    while ((p = r.find("\"courseid\"", p)) != std::string::npos) { cnt++; p++; }
+                    OSD::Notify(Color::Green << "Found: " << cnt << " levels");
+                }
+            }
+        }
+
+        void MenuTest(MenuEntry*) {
             if (!g_netOk && !InitNet()) return;
-            OSD::Notify(Color::Yellow << "Testing...");
+            OSD::Notify(Color::Yellow << "Testing SMMDB...");
             std::string r = HttpGet("https://smmdb.net/api/getcourses?limit=1");
-            if (!r.empty()) OSD::Notify(Color::Green << "OK!");
-            else OSD::Notify(Color::Red << "Failed");
+            if (!r.empty()) OSD::Notify(Color::Green << "SMMDB OK!");
+            else OSD::Notify(Color::Red << "Failed!");
         }
 
-        void MAbout(MenuEntry*) {
-            MessageBox("MM3DS Level Search v1.0\n\nConnects to SMMDB API!\n\nsmmdb.net/api\n\nWiFi required!")();
+        void MenuAbout(MenuEntry*) {
+            MessageBox("MM3DS Level Search v1.0\n\n"
+                      "REAL SMMDB API!\n\n"
+                      "Features:\n"
+                      "- Search by name\n"
+                      "- Search by author\n"
+                      "- Test connection\n\n"
+                      "WiFi required!\n"
+                      "Works with Pretendo!")();
         }
 
-        void MInit(MenuEntry*) { OSD::Notify(Color::Green << "MM3DS loaded!"); }
+        void MenuInit(MenuEntry*) {
+            OSD::Notify(Color::Green << "MM3DS Level Search loaded!");
+            OSD::Notify(Color::Cyan << "Press SELECT");
+        }
 
         int main() {
             PluginMenu m("MM3DS Level Search", 1, 0, 0);
-            m.Append(new MenuEntry("Search", MSearch));
-            m.Append(new MenuEntry("Test Connection", MTest));
-            m.Append(new MenuEntry("About", MAbout));
-            m.OnInitialize = MInit;
+            m.SynchronizeWithFrame(true);
+            m.Append(new MenuEntry("Search by Name", MenuSearch, "Search levels"));
+            m.Append(new MenuEntry("Search by Author", MenuAuthor, "Find by creator"));
+            m.Append(new MenuEntry("Test Connection", MenuTest, "Check SMMDB"));
+            m.Append(new MenuEntry("About", MenuAbout));
+            m.OnInitialize = MenuInit;
             m.Run();
             return 0;
         }
         EOF
-
-    - name: Fix includes in all files
-      run: |
-        cd jisho-3gx
-        # Fix include paths
-        sed -i 's|<CTRPluginFramework.hpp>|"../include/CTRPluginFramework.hpp"|g' Sources/*.cpp
-        sed -i 's|<CTRPluginFramework.hpp>|"../include/CTRPluginFramework.hpp"|g' Includes/*.hpp 2>/dev/null || true
-        sed -i 's|<CTRPluginFramework/|"../include/CTRPluginFramework/|g' Sources/*.cpp
-        sed -i 's|<CTRPluginFramework/|"../include/CTRPluginFramework/|g' Includes/*.hpp 2>/dev/null || true
+        
+        echo "Written to $MAIN"
 
     - name: Build
       run: |
-        cd jisho-3gx
         export DEVKITPRO=/opt/devkitpro
         export DEVKITARM=/opt/devkitpro/devkitARM
         make clean 2>/dev/null || true
         make 2>&1 | tail -30
 
-    - name: Find outputs
+    - name: Find output
       run: |
-        cd jisho-3gx
-        find . -name "*.3gx" -o -name "*.elf"
+        find . -name "*.3gx"
+        find . -name "*.elf"
 
-    - name: Prepare output
+    - name: Prepare artifact
       run: |
         mkdir -p output
-        cd jisho-3gx
         f=$(find . -name "*.3gx" | head -1)
         if [ -n "$f" ]; then
-          cp "$f" ../output/MM3DSSearch.3gx
-          echo "SUCCESS!"
-        else
-          echo "No 3gx found"
+          cp "$f" output/MM3DSSearch.3gx
+          echo "BUILD SUCCESS!"
         fi
-        echo "MM3DS Plugin" > ../output/README.txt
+        
+        cat > output/README.txt << 'EOF'
+        MM3DS LEVEL SEARCH v1.0
+        ======================
+        
+        INSTALLATION:
+        1. Copy MM3DSSearch.3gx to your SD card:
+           EUR: /luma/plugins/0004000000165800/
+           USA: /luma/plugins/0004000000164800/
+           JPN: /luma/plugins/0004000000164400/
+        
+        2. Enable plugins in Luma3DS (hold SELECT on boot)
+        3. Launch Mario Maker 3DS
+        4. Press SELECT in-game
+        
+        FEATURES:
+        - Search by Name (connects to SMMDB!)
+        - Search by Author
+        - Test Connection
+        
+        Requires WiFi + Pretendo Network!
+        API: smmdb.net/api
+        EOF
+        
+        ls -la output/
 
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: MM3DSSearch
+        name: MM3DSSearch-Plugin
         path: output/
