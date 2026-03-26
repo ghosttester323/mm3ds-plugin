@@ -13,7 +13,7 @@ jobs:
 
     steps:
     - name: Install tools
-      run: apt-get update && apt-get install -y git zip curl
+      run: apt-get update && apt-get install -y git zip curl file
 
     - name: Clone CTRPF base
       run: |
@@ -21,24 +21,34 @@ jobs:
         cd jisho-3gx
         git submodule update --init --recursive
 
-    - name: Check structure
+    - name: Check original structure
       run: |
         cd jisho-3gx
-        echo "=== Files ==="
+        echo "=== Root files ==="
         ls -la
-        echo "=== Directories ==="
-        find . -type d -maxdepth 2
-        echo "=== Source files ==="
-        find . -name "*.cpp"
+        echo "=== All directories ==="
+        find . -type d
+        echo "=== Source directories ==="
+        ls -la source/ 2>/dev/null || ls -la Source/ 2>/dev/null || ls -la Sources/ 2>/dev/null || echo "No source dir found"
+        echo "=== Original main.cpp location ==="
+        find . -name "main.cpp"
 
-    - name: Create MM3DS plugin
+    - name: Replace main.cpp
       run: |
         cd jisho-3gx
         
-        # Create source dir if needed
-        mkdir -p source
+        # Find where main.cpp is and replace it
+        MAINFILE=$(find . -name "main.cpp" | head -1)
+        echo "Found main.cpp at: $MAINFILE"
         
-        cat > source/main.cpp << 'EOFMAIN'
+        MAINDIR=$(dirname "$MAINFILE")
+        echo "Directory: $MAINDIR"
+        
+        # Backup original
+        cp "$MAINFILE" "$MAINFILE.bak"
+        
+        # Write new code
+        cat > "$MAINFILE" << 'EOFMAIN'
         #include <CTRPluginFramework.hpp>
         #include <string>
         #include <vector>
@@ -210,6 +220,9 @@ jobs:
             return 0;
         }
         EOFMAIN
+        
+        echo "New main.cpp written to $MAINFILE"
+        head -5 "$MAINFILE"
 
     - name: Build
       run: |
@@ -217,27 +230,83 @@ jobs:
         export DEVKITPRO=/opt/devkitpro
         export DEVKITARM=/opt/devkitpro/devkitARM
         make clean 2>/dev/null || true
-        make 2>&1 | tail -20
+        make 2>&1
 
-    - name: Find output
+    - name: Check all build outputs
       run: |
         cd jisho-3gx
-        find . -name "*.3gx"
-        find . -name "*.elf"
+        echo "=== All files after build ==="
+        find . -type f -name "*.3gx" 2>/dev/null
+        find . -type f -name "*.elf" 2>/dev/null
+        find . -type f -name "*.a" 2>/dev/null
+        find . -type f -name "*.o" 2>/dev/null | head -5
+        echo "=== Files in root ==="
+        ls -la
 
-    - name: Prepare output
+    - name: Download 3gxtool and convert
+      run: |
+        # Download 3gxtool
+        curl -L -o 3gxtool "https://github.com/Nanquitas/3gxtool/releases/download/v2.0/3gxtool-linux-x86_64" 2>/dev/null || \
+        curl -L -o 3gxtool "https://github.com/Nanquitas/3gxtool/releases/download/v1.0/3gxtool-linux" 2>/dev/null || \
+        echo "Could not download 3gxtool"
+        
+        chmod +x 3gxtool 2>/dev/null || true
+        
+        cd jisho-3gx
+        
+        # Find ELF file
+        ELFFILE=$(find . -name "*.elf" | head -1)
+        echo "Found ELF: $ELFFILE"
+        
+        if [ -n "$ELFFILE" ] && [ -f "../3gxtool" ]; then
+          echo "Converting ELF to 3gx..."
+          ../3gxtool "$ELFFILE" MM3DSSearch.3gx 2>&1 || echo "Conversion attempted"
+          ls -la *.3gx 2>/dev/null
+        fi
+
+    - name: Prepare final output
       run: |
         mkdir -p output
-        cd jisho-3gx
-        f=$(find . -name "*.3gx" | head -1)
-        if [ -n "$f" ]; then
-          cp "$f" ../output/MM3DSSearch.3gx
-          echo "SUCCESS!"
+        
+        # Check for 3gx anywhere
+        FOUND3GX=$(find jisho-3gx -name "*.3gx" | head -1)
+        
+        if [ -n "$FOUND3GX" ]; then
+          echo "Found 3gx: $FOUND3GX"
+          cp "$FOUND3GX" output/MM3DSSearch.3gx
+        else
+          echo "No 3gx found, checking build log..."
+          echo "Build may have failed to produce output"
         fi
-        echo "README" > ../output/README.txt
+        
+        # Create README
+        cat > output/README.txt << 'EOF'
+        MM3DS LEVEL SEARCH v1.0
+        ======================
+        
+        INSTALLATION:
+        EUR: /luma/plugins/0004000000165800/
+        USA: /luma/plugins/0004000000164800/
+        JPN: /luma/plugins/0004000000164400/
+        
+        1. Enable plugins in Luma3DS (hold SELECT on boot)
+        2. Launch Mario Maker 3DS
+        3. Press SELECT in-game for menu
+        
+        FEATURES:
+        - Search by Name
+        - Search by Author  
+        - View Results
+        - Test Connection
+        
+        Requires WiFi!
+        API: smmdb.net
+        EOF
+        
+        ls -la output/
 
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: MM3DSSearch-RealAPI
+        name: MM3DSSearch-Plugin
         path: output/
