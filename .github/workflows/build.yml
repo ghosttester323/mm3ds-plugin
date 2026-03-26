@@ -13,41 +13,57 @@ jobs:
 
     steps:
     - name: Install tools
-      run: apt-get update && apt-get install -y git zip curl file
+      run: apt-get update && apt-get install -y git zip curl
 
-    - name: Clone CTRPF base
+    - name: Clone CTRPluginFramework
       run: |
-        git clone --recursive https://github.com/mortenson/jisho-3gx.git
-        cd jisho-3gx
-        git submodule update --init --recursive
-
-    - name: Check original structure
+        git clone --depth=1 https://github.com/Nanquitas/CTRPluginFramework.git
+        
+    - name: Clone jisho-3gx
       run: |
-        cd jisho-3gx
-        echo "=== Root files ==="
-        ls -la
-        echo "=== All directories ==="
-        find . -type d
-        echo "=== Source directories ==="
-        ls -la source/ 2>/dev/null || ls -la Source/ 2>/dev/null || ls -la Sources/ 2>/dev/null || echo "No source dir found"
-        echo "=== Original main.cpp location ==="
-        find . -name "main.cpp"
+        git clone --depth=1 https://github.com/mortenson/jisho-3gx.git
+        
+    - name: Link CTRPluginFramework into jisho-3gx
+      run: |
+        # Create lib directory in jisho-3gx
+        mkdir -p jisho-3gx/lib/CTRPluginFramework
+        
+        # Copy CTRPluginFramework include files
+        cp -r CTRPluginFramework/include jisho-3gx/lib/CTRPluginFramework/
+        
+        # Check structure
+        ls -la jisho-3gx/lib/CTRPluginFramework/include/
+        ls -la jisho-3gx/Includes/ 2>/dev/null || echo "No Includes dir"
 
-    - name: Replace main.cpp
+    - name: Fix include paths in jisho-3gx
       run: |
         cd jisho-3gx
         
-        # Find where main.cpp is and replace it
+        # Find all hpp and cpp files and check their includes
+        echo "=== Checking include structure ==="
+        ls -la Includes/ 2>/dev/null || ls -la include/ 2>/dev/null || echo "Checking other locations"
+        
+        # Create symlink or copy includes
+        mkdir -p include
+        cp -r ../CTRPluginFramework/include/* include/
+        
+        echo "=== Include directory ==="
+        ls -la include/
+        ls -la include/CTRPluginFramework/ 2>/dev/null | head -10
+
+    - name: Check Makefile
+      run: |
+        cd jisho-3gx
+        cat Makefile | head -40
+
+    - name: Create our plugin code
+      run: |
+        cd jisho-3gx
+        
+        # Find and replace main.cpp
         MAINFILE=$(find . -name "main.cpp" | head -1)
-        echo "Found main.cpp at: $MAINFILE"
+        echo "Main file: $MAINFILE"
         
-        MAINDIR=$(dirname "$MAINFILE")
-        echo "Directory: $MAINDIR"
-        
-        # Backup original
-        cp "$MAINFILE" "$MAINFILE.bak"
-        
-        # Write new code
         cat > "$MAINFILE" << 'EOFMAIN'
         #include <CTRPluginFramework.hpp>
         #include <string>
@@ -191,7 +207,6 @@ jobs:
         }
 
         void MRecent(MenuEntry*) { Search(""); }
-
         void MTest(MenuEntry*) {
             OSD::Notify(Color::Yellow << "Testing...");
             if (!g_netOk && !InitNet()) return;
@@ -199,30 +214,33 @@ jobs:
             if (!r.empty()) OSD::Notify(Color::Green << "OK!");
             else OSD::Notify(Color::Red << "Failed");
         }
-
-        void MAbout(MenuEntry*) {
-            MessageBox("MM3DS Level Search v1.0\n\nREAL API!\n\nsmmdb.net/api\n\n- Search by name\n- Search by author\n- View results\n\nWiFi required!\nSELECT=menu")();
-        }
-
+        void MAbout(MenuEntry*) { MessageBox("MM3DS Level Search v1.0\n\nREAL API!\n\nsmmdb.net/api\n\n- Search by name\n- Search by author\n\nWiFi required!")(); }
         void MInit(MenuEntry*) { OSD::Notify(Color::Green << "MM3DS loaded!"); }
 
         int main() {
             PluginMenu m("MM3DS Level Search", 1, 0, 0);
             m.SynchronizeWithFrame(true);
-            m.Append(new MenuEntry("Search by Name", MSearchName, "Search"));
-            m.Append(new MenuEntry("Search by Author", MSearchOwner, "By creator"));
-            m.Append(new MenuEntry("View Results", MResults, "Found levels"));
-            m.Append(new MenuEntry("Recent Levels", MRecent, "Latest"));
-            m.Append(new MenuEntry("Test Connection", MTest, "Test WiFi"));
+            m.Append(new MenuEntry("Search by Name", MSearchName));
+            m.Append(new MenuEntry("Search by Author", MSearchOwner));
+            m.Append(new MenuEntry("View Results", MResults));
+            m.Append(new MenuEntry("Recent Levels", MRecent));
+            m.Append(new MenuEntry("Test Connection", MTest));
             m.Append(new MenuEntry("About", MAbout));
             m.OnInitialize = MInit;
             m.Run();
             return 0;
         }
         EOFMAIN
+
+    - name: Fix all includes
+      run: |
+        cd jisho-3gx
         
-        echo "New main.cpp written to $MAINFILE"
-        head -5 "$MAINFILE"
+        # Fix include paths in all source files
+        find . -name "*.hpp" -o -name "*.cpp" | while read f; do
+          sed -i 's|<CTRPluginFramework.hpp>|"include/CTRPluginFramework.hpp"|g' "$f" 2>/dev/null || true
+          sed -i 's|<CTRPluginFramework/|"include/CTRPluginFramework/|g' "$f" 2>/dev/null || true
+        done
 
     - name: Build
       run: |
@@ -230,83 +248,24 @@ jobs:
         export DEVKITPRO=/opt/devkitpro
         export DEVKITARM=/opt/devkitpro/devkitARM
         make clean 2>/dev/null || true
-        make 2>&1
+        make 2>&1 | head -50
 
-    - name: Check all build outputs
+    - name: Find outputs
       run: |
         cd jisho-3gx
-        echo "=== All files after build ==="
-        find . -type f -name "*.3gx" 2>/dev/null
-        find . -type f -name "*.elf" 2>/dev/null
-        find . -type f -name "*.a" 2>/dev/null
-        find . -type f -name "*.o" 2>/dev/null | head -5
-        echo "=== Files in root ==="
-        ls -la
+        find . -name "*.3gx" -o -name "*.elf"
 
-    - name: Download 3gxtool and convert
-      run: |
-        # Download 3gxtool
-        curl -L -o 3gxtool "https://github.com/Nanquitas/3gxtool/releases/download/v2.0/3gxtool-linux-x86_64" 2>/dev/null || \
-        curl -L -o 3gxtool "https://github.com/Nanquitas/3gxtool/releases/download/v1.0/3gxtool-linux" 2>/dev/null || \
-        echo "Could not download 3gxtool"
-        
-        chmod +x 3gxtool 2>/dev/null || true
-        
-        cd jisho-3gx
-        
-        # Find ELF file
-        ELFFILE=$(find . -name "*.elf" | head -1)
-        echo "Found ELF: $ELFFILE"
-        
-        if [ -n "$ELFFILE" ] && [ -f "../3gxtool" ]; then
-          echo "Converting ELF to 3gx..."
-          ../3gxtool "$ELFFILE" MM3DSSearch.3gx 2>&1 || echo "Conversion attempted"
-          ls -la *.3gx 2>/dev/null
-        fi
-
-    - name: Prepare final output
+    - name: Prepare output
       run: |
         mkdir -p output
-        
-        # Check for 3gx anywhere
-        FOUND3GX=$(find jisho-3gx -name "*.3gx" | head -1)
-        
-        if [ -n "$FOUND3GX" ]; then
-          echo "Found 3gx: $FOUND3GX"
-          cp "$FOUND3GX" output/MM3DSSearch.3gx
-        else
-          echo "No 3gx found, checking build log..."
-          echo "Build may have failed to produce output"
-        fi
-        
-        # Create README
-        cat > output/README.txt << 'EOF'
-        MM3DS LEVEL SEARCH v1.0
-        ======================
-        
-        INSTALLATION:
-        EUR: /luma/plugins/0004000000165800/
-        USA: /luma/plugins/0004000000164800/
-        JPN: /luma/plugins/0004000000164400/
-        
-        1. Enable plugins in Luma3DS (hold SELECT on boot)
-        2. Launch Mario Maker 3DS
-        3. Press SELECT in-game for menu
-        
-        FEATURES:
-        - Search by Name
-        - Search by Author  
-        - View Results
-        - Test Connection
-        
-        Requires WiFi!
-        API: smmdb.net
-        EOF
-        
-        ls -la output/
+        cd jisho-3gx
+        f=$(find . -name "*.3gx" | head -1)
+        [ -n "$f" ] && cp "$f" ../output/MM3DSSearch.3gx
+        echo "Done" > ../output/README.txt
+        ls -la ../output/
 
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: MM3DSSearch-Plugin
+        name: MM3DSSearch
         path: output/
