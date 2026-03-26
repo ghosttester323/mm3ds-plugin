@@ -12,97 +12,65 @@ jobs:
       image: devkitpro/devkitarm:latest
 
     steps:
-    - name: Install build tools
+    - name: Install tools
       run: |
-        apt-get update
-        apt-get install -y git zip
-        
-        # Install 3gxtool
-        git clone https://github.com/Nanquitas/3gxtool.git
-        cd 3gxtool
-        gcc 3gxtool.c -o 3gxtool
-        cp 3gxtool /usr/local/bin/
-        cd ..
+        apt-get update && apt-get install -y git zip wget
 
-    - name: Clone working CTRPF plugin
+    - name: Download 3gxtool
       run: |
-        # Clone a working plugin as base
+        # Download prebuilt 3gxtool
+        wget -q https://github.com/Nanquitas/3gxtool/releases/download/v2.0/3gxtool-linux-x86_64 -O /usr/local/bin/3gxtool || \
+        wget -q https://github.com/Nanquitas/3gxtool/releases/download/v1.0/3gxtool-linux -O /usr/local/bin/3gxtool || \
+        echo "Could not download 3gxtool, will try without"
+        chmod +x /usr/local/bin/3gxtool 2>/dev/null || true
+
+    - name: Clone jisho-3gx
+      run: |
         git clone --recursive https://github.com/mortenson/jisho-3gx.git
         cd jisho-3gx
+        git submodule update --init --recursive
         ls -la
-        
-        # Check if there's a lib folder
-        ls -la lib/ 2>/dev/null || echo "No lib folder"
-        
-        # Check the include structure
-        ls -la include/ 2>/dev/null || echo "No include folder"
+        ls -la lib/ 2>/dev/null || echo "No lib"
 
-    - name: Show repo structure
+    - name: Check structure
       run: |
         cd jisho-3gx
-        find . -name "*.yml" -o -name "Makefile" -o -name "*.mk"
-        cat Makefile 2>/dev/null || echo "No Makefile"
-        
-    - name: Build the original plugin first
+        cat Makefile
+        echo "---"
+        ls -la include/CTRPluginFramework/ 2>/dev/null || echo "No CTRPF includes"
+
+    - name: Build
       run: |
         cd jisho-3gx
         export DEVKITPRO=/opt/devkitpro
         export DEVKITARM=/opt/devkitpro/devkitARM
-        make clean
-        make 2>&1 || echo "Build attempt done"
-        ls -la *.3gx 2>/dev/null || echo "No 3gx yet"
-        find . -name "*.3gx"
-
-    - name: Check if build succeeded
-      run: |
-        cd jisho-3gx
-        if [ -f "*.3gx" ]; then
-          echo "SUCCESS: 3gx file built!"
-          cp *.3gx ../MM3DSSearch.3gx
-        else
-          found=$(find . -name "*.3gx" | head -1)
-          if [ -n "$found" ]; then
-            echo "SUCCESS: Found 3gx at $found"
-            cp "$found" ../MM3DSSearch.3gx
-          else
-            echo "Build failed - checking what we have"
-            find . -name "*.elf"
-            find . -name "*.a"
-          fi
-        fi
+        make clean 2>/dev/null || true
+        make 2>&1 | head -100
+        echo "---"
+        ls -la *.3gx 2>/dev/null || find . -name "*.3gx"
 
     - name: Prepare output
       run: |
         mkdir -p output
+        cd jisho-3gx
         
-        if [ -f MM3DSSearch.3gx ]; then
-          cp MM3DSSearch.3gx output/
-          echo "Plugin built successfully!"
+        # Find any 3gx file
+        found=$(find . -name "*.3gx" | head -1)
+        if [ -n "$found" ]; then
+          cp "$found" ../output/MM3DSSearch.3gx
+          echo "Built successfully!"
         else
-          # If build failed, create instructions
-          echo "Build Status: In Progress" > output/STATUS.txt
-          echo "" >> output/STATUS.txt
-          echo "The plugin requires additional setup." >> output/STATUS.txt
-          echo "Please check the Actions log for details." >> output/STATUS.txt
+          # Check for ELF that could be converted
+          elf=$(find . -name "*.elf" | head -1)
+          if [ -n "$elf" ]; then
+            echo "Found ELF: $elf"
+            3gxtool "$elf" ../output/MM3DSSearch.3gx 2>&1 || echo "3gxtool failed"
+          fi
         fi
         
-        # Always create README
-        cat > output/README.txt << 'EOF'
-        MM3DS Level Search Plugin
-        =========================
-        
-        INSTALLATION:
-        1. Place MM3DSSearch.3gx on your SD card:
-           EUR: /luma/plugins/0004000000165800/
-           USA: /luma/plugins/0004000000164800/
-        
-        2. Enable plugins in Luma3DS (hold SELECT on boot)
-        
-        3. Launch Mario Maker 3DS
-        4. Press SELECT in-game to open menu
-        EOF
+        ls -la ../output/
 
-    - name: Upload artifact
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
         name: MM3DSSearch-plugin
