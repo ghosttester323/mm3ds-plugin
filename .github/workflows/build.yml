@@ -18,9 +18,13 @@ jobs:
         repository: PabloMK7/CTRPluginFramework-BlankTemplate
         submodules: recursive
 
-    - name: Create plugin source files
+    - name: Create directories
       run: |
-        # Create main plugin code
+        mkdir -p source
+        mkdir -p output
+
+    - name: Create main.cpp
+      run: |
         cat > source/main.cpp << 'EOFMAIN'
         #include <CTRPluginFramework.hpp>
         #include <string>
@@ -39,27 +43,18 @@ jobs:
 
         static std::vector<LevelInfo> searchResults;
         static bool networkReady = false;
-        static std::string lastError;
 
-        // Search function (placeholder - would connect to SMMDB API)
+        // Search function (placeholder)
         void DoSearch(const std::string& query) {
             searchResults.clear();
             OSD::Notify("Searching: " + query);
-            
-            // In a real implementation, this would:
-            // 1. Connect to SMMDB API
-            // 2. Search for levels
-            // 3. Parse results
-            
-            // Placeholder: show a message
-            OSD::Notify("Search complete! Results: 0");
+            OSD::Notify("Search complete!");
         }
 
         // Menu entries
         void SearchByName(MenuEntry *entry) {
             Keyboard keyboard;
             keyboard.SetHeaderText("Enter level name:");
-            
             std::string input;
             if (keyboard.Open(input) == 0 && !input.empty()) {
                 DoSearch(input);
@@ -69,7 +64,6 @@ jobs:
         void SearchByAuthor(MenuEntry *entry) {
             Keyboard keyboard;
             keyboard.SetHeaderText("Enter author name:");
-            
             std::string input;
             if (keyboard.Open(input) == 0 && !input.empty()) {
                 OSD::Notify("Searching by author: " + input);
@@ -84,46 +78,40 @@ jobs:
             MessageBox("MM3DS Level Search v1.0\n\n"
                       "Search for Mario Maker 3DS levels\n"
                       "by name or author!\n\n"
-                      "Works with Pretendo Network\n\n"
-                      "Made with CTRPluginFramework")();
+                      "Works with Pretendo Network")();
         }
 
-        // Plugin initialization
-        void Init(MenuEntry *entry) {
+        void PluginInit(MenuEntry *entry) {
             networkReady = true;
             OSD::Notify("MM3DS Level Search loaded!");
         }
 
-        // Main entry point
         int main() {
             PluginMenu menu("MM3DS Level Search", 1, 0, 0);
 
-            // Add menu entries
-            MenuEntry *entry1 = new MenuEntry("Search by Name", SearchByName);
-            entry1->SetNote("Search levels by name");
-            menu.Append(entry1);
+            MenuEntry *e1 = new MenuEntry("Search by Name", SearchByName);
+            e1->SetNote("Search levels by name");
+            menu.Append(e1);
 
-            MenuEntry *entry2 = new MenuEntry("Search by Author", SearchByAuthor);
-            entry2->SetNote("Find levels by creator");
-            menu.Append(entry2);
+            MenuEntry *e2 = new MenuEntry("Search by Author", SearchByAuthor);
+            e2->SetNote("Find levels by creator");
+            menu.Append(e2);
 
-            MenuEntry *entry3 = new MenuEntry("Popular Levels", ShowPopular);
-            entry3->SetNote("Browse popular levels");
-            menu.Append(entry3);
+            MenuEntry *e3 = new MenuEntry("Popular Levels", ShowPopular);
+            e3->SetNote("Browse popular levels");
+            menu.Append(e3);
 
-            MenuEntry *entry4 = new MenuEntry("About", ShowAbout);
-            menu.Append(entry4);
+            MenuEntry *e4 = new MenuEntry("About", ShowAbout);
+            menu.Append(e4);
 
-            // Init callback
-            menu.OnInitialize = Init;
+            menu.OnInitialize = PluginInit;
 
-            // Run
             menu.Run();
             return 0;
         }
         EOFMAIN
 
-    - name: Update plgInfo
+    - name: Create plgInfo
       run: |
         cat > CTRPluginFramework.plgInfo << 'EOFPLG'
         [Plugin]
@@ -131,81 +119,53 @@ jobs:
         author = Community
         description = Search levels in Mario Maker 3DS
         version = 1.0.0
-        iconPath = icon.png
         EOFPLG
-
-    - name: Download 3gxtool
-      run: |
-        wget -q https://github.com/Nanquitas/3gxtool/releases/download/v2.0/3gxtool-linux-x86_64 -O 3gxtool || \
-        wget -q https://github.com/Nanquitas/3gxtool/releases/download/v1.0/3gxtool-linux -O 3gxtool
-        chmod +x 3gxtool
 
     - name: Build plugin
       run: |
         export DEVKITPRO=/opt/devkitpro
         export DEVKITARM=/opt/devkitpro/devkitARM
-        
-        # Build using the template's makefile
         make clean
         make -j4
-        
-        # Check if 3gx was created
-        ls -la *.3gx 2>/dev/null || ls -la build/*.3gx 2>/dev/null || ls -la
+        ls -la
 
-    - name: Prepare artifact
+    - name: Find and copy 3gx
       run: |
         mkdir -p output
-        # Find the 3gx file
-        if [ -f "*.3gx" ]; then
-          cp *.3gx output/MM3DSSearch.3gx
-        elif [ -f "build/*.3gx" ]; then
-          cp build/*.3gx output/MM3DSSearch.3gx
-        else
-          # Manual conversion if needed
-          elf_file=$(find . -name "*.elf" | head -1)
-          if [ -n "$elf_file" ]; then
-            ./3gxtool "$elf_file" output/MM3DSSearch.3gx
-          fi
-        fi
+        find . -name "*.3gx" -exec cp {} output/MM3DSSearch.3gx \;
         ls -la output/
 
     - name: Create README
       run: |
-        cat > output/README.md << 'EOFREADME'
-        # MM3DS Level Search Plugin
+        cat > output/README.txt << 'EOFREADME'
+        MM3DS Level Search Plugin v1.0
+        ==============================
 
-        Plugin de recherche de niveaux pour Super Mario Maker 3DS.
+        INSTALLATION:
+        -------------
+        1. Copie MM3DSSearch.3gx sur ta carte SD:
+           
+           Pour EUR: /luma/plugins/0004000000165800/
+           Pour USA: /luma/plugins/0004000000164800/
+           Pour JPN: /luma/plugins/0004000000164400/
 
-        ## Installation
-
-        1. Copie `MM3DSSearch.3gx` sur ta carte SD:
-           - EUR: `/luma/plugins/0004000000165800/`
-           - USA: `/luma/plugins/0004000000164800/`
-           - JPN: `/luma/plugins/0004000000164400/`
-
-        2. Active les plugins dans Luma3DS:
-           - Eteins ta 3DS
+        2. Active les plugins Luma3DS:
+           - Eteins la 3DS
            - Maintiens SELECT et allume
            - Active "Enable game plugins"
-           - Sauvegarde et quitte
+           - Sauvegarde (START)
 
         3. Lance Mario Maker 3DS
-        4. Appuie sur SELECT pour ouvrir le menu
+        4. Appuie sur SELECT dans le jeu
 
-        ## Utilisation
+        UTILISATION:
+        ------------
+        - Search by Name: Cherche par nom de niveau
+        - Search by Author: Cherche par createur
+        - Popular Levels: Niveaux populaires
+        - About: Informations
 
-        - **Search by Name**: Cherche un niveau par son nom
-        - **Search by Author**: Trouve les niveaux d'un createur
-        - **Popular Levels**: Voir les niveaux populaires
-
-        ## Compatible
-
-        - Pretendo Network
-        - Luma3DS avec Plugin Loader
-
-        ## Source
-
-        Build automatique via GitHub Actions.
+        Compatible avec Pretendo Network!
         EOFREADME
 
     - name: Upload artifact
