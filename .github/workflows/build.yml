@@ -17,47 +17,42 @@ jobs:
       with:
         repository: PabloMK7/CTRPluginFramework-BlankTemplate
         submodules: recursive
+        fetch-depth: 0
 
-    - name: Create directories
+    - name: Debug - Show structure
       run: |
-        mkdir -p source
-        mkdir -p output
+        echo "=== Current directory ==="
+        pwd
+        echo "=== Files ==="
+        ls -la
+        echo "=== Subdirectories ==="
+        find . -type d -maxdepth 2
+        echo "=== Looking for headers ==="
+        find . -name "*.hpp" | head -20
+        echo "=== Looking for makefiles ==="
+        find . -name "Makefile" -o -name "makefile"
 
-    - name: Create main.cpp
+    - name: Create main plugin code
       run: |
-        cat > source/main.cpp << 'EOFMAIN'
+        # Backup original and create new main
+        mv Sources/main.cpp Sources/main.cpp.bak
+        
+        cat > Sources/main.cpp << 'EOFMAIN'
         #include <CTRPluginFramework.hpp>
         #include <string>
         #include <vector>
 
         using namespace CTRPluginFramework;
 
-        // Level data structure
-        struct LevelInfo {
-            std::string id;
-            std::string name;
-            std::string author;
-            int stars;
-            int clears;
-        };
-
-        static std::vector<LevelInfo> searchResults;
         static bool networkReady = false;
 
-        // Search function (placeholder)
-        void DoSearch(const std::string& query) {
-            searchResults.clear();
-            OSD::Notify("Searching: " + query);
-            OSD::Notify("Search complete!");
-        }
-
-        // Menu entries
         void SearchByName(MenuEntry *entry) {
             Keyboard keyboard;
             keyboard.SetHeaderText("Enter level name:");
             std::string input;
             if (keyboard.Open(input) == 0 && !input.empty()) {
-                DoSearch(input);
+                OSD::Notify("Searching: " + input);
+                OSD::Notify("Feature coming soon!");
             }
         }
 
@@ -66,7 +61,7 @@ jobs:
             keyboard.SetHeaderText("Enter author name:");
             std::string input;
             if (keyboard.Open(input) == 0 && !input.empty()) {
-                OSD::Notify("Searching by author: " + input);
+                OSD::Notify("Author search: " + input);
             }
         }
 
@@ -76,7 +71,7 @@ jobs:
 
         void ShowAbout(MenuEntry *entry) {
             MessageBox("MM3DS Level Search v1.0\n\n"
-                      "Search for Mario Maker 3DS levels\n"
+                      "Search Mario Maker 3DS levels\n"
                       "by name or author!\n\n"
                       "Works with Pretendo Network")();
         }
@@ -89,29 +84,18 @@ jobs:
         int main() {
             PluginMenu menu("MM3DS Level Search", 1, 0, 0);
 
-            MenuEntry *e1 = new MenuEntry("Search by Name", SearchByName);
-            e1->SetNote("Search levels by name");
-            menu.Append(e1);
-
-            MenuEntry *e2 = new MenuEntry("Search by Author", SearchByAuthor);
-            e2->SetNote("Find levels by creator");
-            menu.Append(e2);
-
-            MenuEntry *e3 = new MenuEntry("Popular Levels", ShowPopular);
-            e3->SetNote("Browse popular levels");
-            menu.Append(e3);
-
-            MenuEntry *e4 = new MenuEntry("About", ShowAbout);
-            menu.Append(e4);
+            menu.Append(new MenuEntry("Search by Name", SearchByName, "Search by level name"));
+            menu.Append(new MenuEntry("Search by Author", SearchByAuthor, "Find levels by creator"));
+            menu.Append(new MenuEntry("Popular Levels", ShowPopular, "Browse popular levels"));
+            menu.Append(new MenuEntry("About", ShowAbout));
 
             menu.OnInitialize = PluginInit;
-
             menu.Run();
             return 0;
         }
         EOFMAIN
 
-    - name: Create plgInfo
+    - name: Update plugin info
       run: |
         cat > CTRPluginFramework.plgInfo << 'EOFPLG'
         [Plugin]
@@ -121,52 +105,56 @@ jobs:
         version = 1.0.0
         EOFPLG
 
-    - name: Build plugin
+    - name: Build
       run: |
         export DEVKITPRO=/opt/devkitpro
         export DEVKITARM=/opt/devkitpro/devkitARM
         make clean
         make -j4
+
+    - name: Find output
+      run: |
+        echo "=== Looking for 3gx files ==="
+        find . -name "*.3gx"
+        echo "=== Looking for elf files ==="
+        find . -name "*.elf"
+        echo "=== All files in current dir ==="
         ls -la
 
-    - name: Find and copy 3gx
+    - name: Prepare artifact
       run: |
         mkdir -p output
-        find . -name "*.3gx" -exec cp {} output/MM3DSSearch.3gx \;
-        ls -la output/
-
-    - name: Create README
-      run: |
+        # Find and copy 3gx
+        if [ -f "*.3gx" ]; then
+          cp *.3gx output/MM3DSSearch.3gx
+        else
+          found=$(find . -name "*.3gx" | head -1)
+          if [ -n "$found" ]; then
+            cp "$found" output/MM3DSSearch.3gx
+          fi
+        fi
+        
+        # Create README
         cat > output/README.txt << 'EOFREADME'
         MM3DS Level Search Plugin v1.0
         ==============================
-
+        
         INSTALLATION:
-        -------------
-        1. Copie MM3DSSearch.3gx sur ta carte SD:
-           
-           Pour EUR: /luma/plugins/0004000000165800/
-           Pour USA: /luma/plugins/0004000000164800/
-           Pour JPN: /luma/plugins/0004000000164400/
-
-        2. Active les plugins Luma3DS:
-           - Eteins la 3DS
-           - Maintiens SELECT et allume
-           - Active "Enable game plugins"
-           - Sauvegarde (START)
-
+        1. Copie MM3DSSearch.3gx sur ta SD:
+           EUR: /luma/plugins/0004000000165800/
+           USA: /luma/plugins/0004000000164800/
+           JPN: /luma/plugins/0004000000164400/
+        
+        2. Active "Enable game plugins" dans Luma3DS
+           (Maintiens SELECT au demarrage)
+        
         3. Lance Mario Maker 3DS
         4. Appuie sur SELECT dans le jeu
-
-        UTILISATION:
-        ------------
-        - Search by Name: Cherche par nom de niveau
-        - Search by Author: Cherche par createur
-        - Popular Levels: Niveaux populaires
-        - About: Informations
-
-        Compatible avec Pretendo Network!
+        
+        Compatible Pretendo Network!
         EOFREADME
+        
+        ls -la output/
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
