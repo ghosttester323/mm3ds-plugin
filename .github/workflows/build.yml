@@ -14,7 +14,7 @@ jobs:
     steps:
     - name: Create project structure
       run: |
-        mkdir -p source include
+        mkdir -p source include lib
 
     - name: Create main.cpp
       run: |
@@ -91,6 +91,7 @@ jobs:
         cat > source/search.cpp << 'EOFSEARCHCPP'
         #include "search.h"
         #include <sstream>
+        #include <iomanip>
 
         namespace Search {
             static std::string lastError;
@@ -264,6 +265,25 @@ jobs:
         #endif
         EOFPLUGINH
 
+    - name: Download CTRPluginFramework release
+      run: |
+        # Download prebuilt CTRPluginFramework
+        wget -q https://github.com/Nanquitas/CTRPluginFramework/releases/download/v0.7.4/CTRPluginFramework-0.7.4.zip -O ctrpf.zip
+        unzip -q ctrpf.zip
+        # Move libraries to lib folder
+        find . -name "*.a" -exec cp {} lib/ \;
+        find . -name "CTRPluginFramework*" -type d -exec cp -r {} include/ \; 2>/dev/null || true
+        ls -la lib/
+        ls -la include/
+
+    - name: Download 3gxtool
+      run: |
+        wget -q https://github.com/Nanquitas/3gxtool/releases/download/v1.0/3gxtool-linux -O /usr/local/bin/3gxtool
+        chmod +x /usr/local/bin/3gxtool
+        # Also download to local for backup
+        wget -q https://github.com/Nanquitas/3gxtool/releases/download/v1.0/3gxtool-linux -O 3gxtool
+        chmod +x 3gxtool
+
     - name: Create Makefile
       run: |
         cat > Makefile << 'EOFMAKEFILE'
@@ -280,27 +300,32 @@ jobs:
         BUILD       :=  build
         SOURCES     :=  source
         INCLUDES    :=  include
+        LIBDIRS     :=  lib
 
         CFILES      :=  $(foreach dir,$(SOURCES),$(wildcard $(dir)/*.c))
         CPPFILES    :=  $(foreach dir,$(SOURCES),$(wildcard $(dir)/*.cpp))
 
-        CFLAGS      :=  -g -Wall -O2 -mword-relocations -fomit-frame-pointer -ffunction-sections -ffast-math -march=armv6k -mtune=mpcore -mtp=soft -mfloat-abi=softfp
+        CFLAGS      :=  -g -O2 -mword-relocations -fomit-frame-pointer -ffunction-sections -ffast-math -march=armv6k -mtune=mpcore -mtp=soft -mfloat-abi=softfp
         CFLAGS      +=  $(INCLUDE) -DARM11 -D_3DS -DCTR_PLUGIN_FRAMEWORK
-        CXXFLAGS    :=  $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17
+        CXXFLAGS    :=  $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17 -Wno-psabi
         ASFLAGS     :=  -g $(INCLUDE)
 
-        LIBDIRS     :=  $(CTRPF_DIR) $(DEVKITPRO)/libctru $(DEVKITPRO)/portlibs/3ds
-        INCLUDE     :=  $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) $(foreach dir,$(LIBDIRS),-I$(dir)/include)
+        INCLUDE     :=  $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) -I$(DEVKITPRO)/libctru/include -I$(DEVKITPRO)/portlibs/3ds/include
+        LIBPATHS    :=  $(foreach dir,$(LIBDIRS),-L$(CURDIR)/$(dir))
         LIBS        :=  -lctrpf -lctru -lm
+
+        LDFLAGS     := $(LIBPATHS)
 
         .PHONY: clean all
 
         all: $(TARGET).3gx
 
         $(TARGET).3gx: $(BUILD)/$(TARGET).elf
-        	@3gxtool $(BUILD)/$(TARGET).elf $(TARGET).3gx
+        	@echo "Creating 3gx..."
+        	@./3gxtool $(BUILD)/$(TARGET).elf $(TARGET).3gx || 3gxtool $(BUILD)/$(TARGET).elf $(TARGET).3gx
 
         $(BUILD)/$(TARGET).elf: $(OFILES)
+        	@echo "Linking..."
         	@$(CXX) $(CXXFLAGS) $(OFILES) $(LDFLAGS) $(LIBS) -o $@
 
         $(BUILD):
@@ -308,6 +333,7 @@ jobs:
 
         $(BUILD)/%.o: %.cpp | $(BUILD)
         	@mkdir -p $(@D)
+        	@echo "Compiling $<..."
         	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
         $(BUILD)/%.o: %.c | $(BUILD)
@@ -321,56 +347,29 @@ jobs:
         -include $(OFILES:.o=.d)
         EOFMAKEFILE
 
-    - name: Download and patch CTRPluginFramework
-      run: |
-        git clone --recursive https://github.com/Tekito-256/CTRPluginFramework.git
-        
-        # Patch the Makefile to not treat warnings as errors
-        cd CTRPluginFramework/Library
-        sed -i 's/-Werror//g' Makefile
-        find . -name "Makefile" -exec sed -i 's/-Werror//g' {} \;
-        
-        # Build with warnings disabled
-        make -j4 CXXFLAGS="-Wno-error -g -O2"
-
     - name: Build plugin
       run: |
-        export CTRPF_DIR=$(pwd)/CTRPluginFramework/Library
+        export DEVKITPRO=/opt/devkitpro
+        export DEVKITARM=/opt/devkitpro/devkitARM
         make clean
         make -j4
         ls -la MM3DSSearch.3gx
 
     - name: Create README
       run: |
-        cat > README.md << 'EOFREADME'
-        # MM3DS Level Search Plugin
-
-        Plugin de recherche de niveaux pour Super Mario Maker 3DS.
-
-        ## Installation
-
-        1. Telecharge `MM3DSSearch.3gx` depuis les Artifacts
-        2. Copie sur ta SD: `/luma/plugins/0004000000165800/` (EUR) ou `/luma/plugins/0004000000164800/` (USA)
-        3. Active "Enable game plugins" dans Luma3DS (SELECT au demarrage)
-        4. Lance Mario Maker 3DS et appuie sur SELECT
-
-        ## Utilisation
-
-        - Appuie sur SELECT pour ouvrir le menu
-        - Recherche par nom ou par auteur
-        - Telecharge les niveaux trouves
-
-        Fonctionne avec Pretendo Network!
-        EOFREADME
+        echo "# MM3DS Level Search Plugin" > README.md
+        echo "" >> README.md
+        echo "Plugin de recherche de niveaux pour Super Mario Maker 3DS." >> README.md
+        echo "" >> README.md
+        echo "## Installation" >> README.md
+        echo "" >> README.md
+        echo "1. Telecharge MM3DSSearch.3gx depuis les Artifacts" >> README.md
+        echo "2. Copie sur ta SD: /luma/plugins/0004000000165800/ (EUR) ou /luma/plugins/0004000000164800/ (USA)" >> README.md
+        echo "3. Active 'Enable game plugins' dans Luma3DS (SELECT au demarrage)" >> README.md
+        echo "4. Lance Mario Maker 3DS et appuie sur SELECT" >> README.md
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: MM3DSSearch-3gx
         path: MM3DSSearch.3gx
-
-    - name: Upload README
-      uses: actions/upload-artifact@v4
-      with:
-        name: README
-        path: README.md
