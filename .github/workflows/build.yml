@@ -14,13 +14,15 @@ jobs:
     steps:
     - name: Install tools
       run: |
-        apt-get update && apt-get install -y git zip wget
+        apt-get update && apt-get install -y git zip wget curl || true
 
-    - name: Download 3gxtool
+    - name: Try download 3gxtool
       run: |
-        wget -q https://github.com/Nanquitas/3gxtool/releases/download/v2.0/3gxtool-linux-x86_64 -O /usr/local/bin/3gxtool || \
-        wget -q https://github.com/Nanquitas/3gxtool/releases/download/v1.0/3gxtool-linux -O /usr/local/bin/3gxtool
-        chmod +x /usr/local/bin/3gxtool
+        curl -L -o /usr/local/bin/3gxtool "https://github.com/Nanquitas/3gxtool/releases/download/v2.0/3gxtool-linux-x86_64" 2>/dev/null || \
+        curl -L -o /usr/local/bin/3gxtool "https://github.com/Nanquitas/3gxtool/releases/download/v1.0/3gxtool-linux" 2>/dev/null || \
+        echo "3gxtool not downloaded, will use make"
+        chmod +x /usr/local/bin/3gxtool 2>/dev/null || true
+        echo "Continuing..."
 
     - name: Clone CTRPF base
       run: |
@@ -48,12 +50,10 @@ jobs:
         // ============================================
 
         namespace {
-            std::vector<std::string> g_searchResults;
             bool g_networkReady = false;
-            u32 g_socBuffer[0x100000/4];
+            u32* g_socBuffer = nullptr;
         }
 
-        // Level data structure
         struct LevelInfo {
             std::string id;
             std::string name;
@@ -64,38 +64,40 @@ jobs:
 
         std::vector<LevelInfo> g_foundLevels;
 
-        // ============================================
-        // NETWORK FUNCTIONS (using 3DS httpc)
-        // ============================================
-
-        // Initialize network (SOC + httpc)
+        // Initialize network
         bool InitNetwork() {
             if (g_networkReady) return true;
             
-            Result ret = socInit(g_socBuffer, sizeof(g_socBuffer));
+            g_socBuffer = (u32*)memalign(0x1000, 0x100000);
+            if (!g_socBuffer) {
+                OSD::Notify(Color::Red << "Memory error");
+                return false;
+            }
+            
+            Result ret = socInit(g_socBuffer, 0x100000);
             if (R_FAILED(ret)) {
-                OSD::Notify(Color::Red << "SOC init failed: " << (int)ret);
+                OSD::Notify(Color::Red << "SOC failed");
                 return false;
             }
             
             ret = httpcInit(0);
             if (R_FAILED(ret)) {
-                OSD::Notify(Color::Red << "HTTP init failed: " << (int)ret);
+                OSD::Notify(Color::Red << "HTTP failed");
                 socExit();
                 return false;
             }
             
             g_networkReady = true;
-            OSD::Notify(Color::Green << "Network ready!");
+            OSD::Notify(Color::Green << "Network OK!");
             return true;
         }
 
         // URL encode
         std::string URLEncode(const std::string& s) {
             std::string out;
-            char hex[4];
+            char hex[8];
             for (unsigned char c : s) {
-                if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+                if (isalnum(c) || c=='-' || c=='_' || c=='.' || c=='~') {
                     out += c;
                 } else {
                     sprintf(hex, "%%%02X", c);
@@ -105,248 +107,182 @@ jobs:
             return out;
         }
 
-        // HTTP GET request
+        // HTTP GET
         std::string HTTPGet(const char* url) {
-            httpcContext context;
-            Result ret = httpcOpenContext(&context, HTTPC_METHOD_GET, url, 0);
-            
-            if (R_FAILED(ret)) {
-                OSD::Notify(Color::Red << "HTTP open failed");
+            httpcContext ctx;
+            if (R_FAILED(httpcOpenContext(&ctx, HTTPC_METHOD_GET, url, 0))) {
                 return "";
             }
+            httpcSetSSLOpt(&ctx, HTTPCOPT_DISABLE_SSLVERIFY);
+            httpcAddRequestHeaderField(&ctx, "User-Agent", "MM3DS/1.0");
             
-            httpcSetSSLOpt(&context, HTTPCOPT_DISABLE_SSLVERIFY);
-            httpcAddRequestHeaderField(&context, "User-Agent", "MM3DS-Plugin/1.0");
-            httpcAddRequestHeaderField(&context, "Accept", "application/json");
-            
-            ret = httpcBeginRequest(&context);
-            if (R_FAILED(ret)) {
-                httpcCloseContext(&context);
-                OSD::Notify(Color::Red << "HTTP request failed");
+            if (R_FAILED(httpcBeginRequest(&ctx))) {
+                httpcCloseContext(&ctx);
                 return "";
             }
             
             u32 status = 0;
-            httpcGetResponseStatusCode(&context, &status);
-            
+            httpcGetResponseStatusCode(&ctx, &status);
             if (status != 200) {
-                httpcCloseContext(&context);
-                OSD::Notify(Color::Red << "HTTP status: " << (int)status);
+                httpcCloseContext(&ctx);
                 return "";
             }
             
-            // Read response
-            std::string response;
-            u8 buffer[4096];
-            u32 readSize = 0;
-            
+            std::string resp;
+            u8 buf[2048];
+            u32 read = 0;
+            Result ret;
             do {
-                ret = httpcDownloadData(&context, buffer, sizeof(buffer), &readSize);
-                if (readSize > 0) {
-                    response.append((char*)buffer, readSize);
-                }
+                ret = httpcDownloadData(&ctx, buf, sizeof(buf), &read);
+                if (read > 0) resp.append((char*)buf, read);
             } while (ret == (Result)HTTPC_RESULTCODE_DOWNLOADPENDING);
             
-            httpcCloseContext(&context);
-            return response;
+            httpcCloseContext(&ctx);
+            return resp;
         }
 
-        // Simple JSON parser
-        std::string ExtractJSONString(const std::string& json, const std::string& key) {
-            std::string search = "\"" + key + "\":\"";
-            size_t pos = json.find(search);
-            if (pos == std::string::npos) return "";
-            
-            pos += search.length();
-            size_t end = json.find('"', pos);
-            if (end == std::string::npos) return "";
-            
-            return json.substr(pos, end - pos);
+        // JSON helpers
+        std::string GetString(const std::string& j, const std::string& k) {
+            std::string s = "\"" + k + "\":\"";
+            size_t p = j.find(s);
+            if (p == std::string::npos) return "";
+            p += s.size();
+            size_t e = j.find('"', p);
+            return (e == std::string::npos) ? "" : j.substr(p, e-p);
         }
 
-        int ExtractJSONInt(const std::string& json, const std::string& key) {
-            std::string search = "\"" + key + "\":";
-            size_t pos = json.find(search);
-            if (pos == std::string::npos) return 0;
-            
-            pos += search.length();
-            while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
-            
-            std::string num;
-            while (pos < json.size() && isdigit(json[pos])) {
-                num += json[pos];
-                pos++;
-            }
-            return num.empty() ? 0 : atoi(num.c_str());
+        int GetInt(const std::string& j, const std::string& k) {
+            std::string s = "\"" + k + "\":";
+            size_t p = j.find(s);
+            if (p == std::string::npos) return 0;
+            p += s.size();
+            while (p < j.size() && (j[p]==' '||j[p]=='\t')) p++;
+            std::string n;
+            while (p < j.size() && isdigit(j[p])) n += j[p++];
+            return n.empty() ? 0 : atoi(n.c_str());
         }
 
-        // Parse courses from JSON
-        void ParseCourses(const std::string& json) {
+        // Parse JSON
+        void ParseJSON(const std::string& json) {
             g_foundLevels.clear();
-            
-            size_t pos = 0;
-            while ((pos = json.find("\"courseid\"", pos)) != std::string::npos) {
-                size_t objStart = json.rfind('{', pos);
-                size_t objEnd = json.find("},", pos);
-                if (objEnd == std::string::npos) objEnd = json.find('}', pos);
-                if (objStart == std::string::npos || objEnd == std::string::npos) break;
+            size_t p = 0;
+            while ((p = json.find("\"courseid\"", p)) != std::string::npos) {
+                size_t st = json.rfind('{', p);
+                size_t en = json.find("}", p);
+                if (st==std::string::npos || en==std::string::npos) break;
                 
-                std::string obj = json.substr(objStart, objEnd - objStart + 1);
+                std::string obj = json.substr(st, en-st+1);
+                LevelInfo lv;
+                lv.id = GetString(obj, "courseid");
+                lv.name = GetString(obj, "title");
+                lv.owner = GetString(obj, "owner");
+                lv.stars = GetInt(obj, "stars");
+                lv.clears = GetInt(obj, "clears");
                 
-                LevelInfo level;
-                level.id = ExtractJSONString(obj, "courseid");
-                level.name = ExtractJSONString(obj, "title");
-                level.owner = ExtractJSONString(obj, "owner");
-                level.stars = ExtractJSONInt(obj, "stars");
-                level.clears = ExtractJSONInt(obj, "clears");
-                
-                if (!level.name.empty() && !level.id.empty()) {
-                    g_foundLevels.push_back(level);
+                if (!lv.name.empty() && !lv.id.empty()) {
+                    g_foundLevels.push_back(lv);
                 }
-                pos = objEnd + 1;
+                p = en + 1;
             }
         }
 
-        // Search levels
-        bool SearchLevels(const std::string& query) {
-            if (!g_networkReady) {
-                if (!InitNetwork()) return false;
-            }
-            
-            g_foundLevels.clear();
+        // Search
+        bool Search(const std::string& q) {
+            if (!g_networkReady && !InitNetwork()) return false;
             
             std::string url = "https://smmdb.net/api/getcourses";
-            if (!query.empty()) {
-                url += "?title=" + URLEncode(query);
-            }
+            if (!q.empty()) url += "?title=" + URLEncode(q);
             
             OSD::Notify(Color::Yellow << "Searching...");
+            std::string r = HTTPGet(url.c_str());
             
-            std::string response = HTTPGet(url.c_str());
-            
-            if (response.empty()) {
+            if (r.empty()) {
                 OSD::Notify(Color::Red << "No response");
                 return false;
             }
             
-            ParseCourses(response);
-            
-            OSD::Notify(Color::Green << "Found: " << g_foundLevels.size() << " levels");
+            ParseJSON(r);
+            OSD::Notify(Color::Green << "Found: " << g_foundLevels.size());
             return !g_foundLevels.empty();
         }
 
-        // ============================================
-        // MENU CALLBACKS
-        // ============================================
-
+        // Menus
         void MenuSearchName(MenuEntry*) {
-            Keyboard kb;
-            kb.SetHeaderText("Enter level name:");
-            std::string input;
-            if (kb.Open(input) == 0 && !input.empty()) {
-                if (SearchLevels(input)) {
-                    OSD::Notify("Use 'View Results'");
-                }
+            Keyboard k;
+            k.SetHeaderText("Level name:");
+            std::string in;
+            if (k.Open(in) == 0 && !in.empty()) {
+                if (Search(in)) OSD::Notify("Use 'View Results'");
             }
         }
 
         void MenuSearchAuthor(MenuEntry*) {
-            Keyboard kb;
-            kb.SetHeaderText("Enter author name:");
-            std::string input;
-            if (kb.Open(input) == 0 && !input.empty()) {
+            Keyboard k;
+            k.SetHeaderText("Author name:");
+            std::string in;
+            if (k.Open(in) == 0 && !in.empty()) {
                 if (!g_networkReady && !InitNetwork()) return;
-                
-                std::string url = "https://smmdb.net/api/getcourses?owner=" + URLEncode(input);
+                std::string url = "https://smmdb.net/api/getcourses?owner=" + URLEncode(in);
                 OSD::Notify(Color::Yellow << "Searching...");
-                std::string resp = HTTPGet(url.c_str());
-                if (!resp.empty()) {
-                    ParseCourses(resp);
+                std::string r = HTTPGet(url.c_str());
+                if (!r.empty()) {
+                    ParseJSON(r);
                     OSD::Notify(Color::Green << "Found: " << g_foundLevels.size());
                 }
             }
         }
 
-        void MenuViewResults(MenuEntry*) {
+        void MenuResults(MenuEntry*) {
             if (g_foundLevels.empty()) {
-                MessageBox("No results!\n\nSearch first.")();
+                MessageBox("No results!\nSearch first.")();
                 return;
             }
-            
             std::vector<std::string> items;
             for (auto& l : g_foundLevels) {
-                std::string s = l.name.substr(0, 25);
-                s += " [" + std::to_string(l.stars) + "\u2605]";
-                items.push_back(s);
+                items.push_back(l.name + " [" + std::to_string(l.stars) + "*]");
             }
-            
-            Keyboard kb;
-            kb.SetHeaderText("Select level:");
-            kb.Populate(items);
-            int sel = kb.Open();
-            
-            if (sel >= 0 && sel < (int)g_foundLevels.size()) {
-                LevelInfo& lv = g_foundLevels[sel];
-                std::string info = lv.name + "\n\n";
-                info += "By: " + lv.owner + "\n";
-                info += "ID: " + lv.id + "\n";
-                info += "Stars: " + std::to_string(lv.stars) + "\n";
-                info += "Clears: " + std::to_string(lv.clears);
-                
-                MessageBox box(info);
-                box.AddButton("OK");
-                box();
+            Keyboard k;
+            k.SetHeaderText("Select:");
+            k.Populate(items);
+            int s = k.Open();
+            if (s >= 0 && s < (int)g_foundLevels.size()) {
+                auto& l = g_foundLevels[s];
+                MessageBox(l.name + "\n\nBy: " + l.owner + "\nID: " + l.id + "\n*: " + std::to_string(l.stars))();
             }
         }
 
         void MenuRecent(MenuEntry*) {
-            SearchLevels("");
+            Search("");
         }
 
-        void MenuTestNet(MenuEntry*) {
-            OSD::Notify(Color::Yellow << "Testing connection...");
-            if (!InitNetwork()) return;
-            
+        void MenuTest(MenuEntry*) {
+            OSD::Notify(Color::Yellow << "Testing...");
+            if (!g_networkReady && !InitNetwork()) return;
             std::string r = HTTPGet("https://smmdb.net/api/getcourses?limit=1");
             if (!r.empty()) {
                 OSD::Notify(Color::Green << "SMMDB OK!");
             } else {
-                OSD::Notify(Color::Red << "Connection failed");
+                OSD::Notify(Color::Red << "Failed");
             }
         }
 
         void MenuAbout(MenuEntry*) {
-            MessageBox(
-                "MM3DS Level Search v1.0\n\n"
-                "REAL API VERSION!\n\n"
-                "Connects to SMMDB:\n"
-                "smmdb.net/api\n\n"
-                "Features:\n"
-                "- Search by name\n"
-                "- Search by author\n"
-                "- View results\n\n"
-                "Requires WiFi!\n"
-                "Works with Pretendo!\n\n"
-                "SELECT = open/close menu"
-            )();
+            MessageBox("MM3DS Level Search v1.0\n\nREAL API VERSION\n\nConnects to:\nsmmdb.net/api\n\nFeatures:\n- Search by name\n- Search by author\n- View results\n\nRequires WiFi!\nSELECT = menu")();
         }
 
         void OnInit(MenuEntry*) {
             OSD::Notify(Color::Green << "MM3DS Search loaded!");
-            OSD::Notify("Press SELECT for menu");
         }
 
         int main() {
             PluginMenu menu("MM3DS Level Search", 1, 0, 0);
             menu.SynchronizeWithFrame(true);
-            
             menu.Append(new MenuEntry("Search by Name", MenuSearchName, "Search levels"));
             menu.Append(new MenuEntry("Search by Author", MenuSearchAuthor, "Find by creator"));
-            menu.Append(new MenuEntry("View Results", MenuViewResults, "View found levels"));
-            menu.Append(new MenuEntry("Recent Levels", MenuRecent, "Browse recent"));
-            menu.Append(new MenuEntry("Test Connection", MenuTestNet, "Test WiFi"));
+            menu.Append(new MenuEntry("View Results", MenuResults, "See found levels"));
+            menu.Append(new MenuEntry("Recent Levels", MenuRecent, "Latest uploads"));
+            menu.Append(new MenuEntry("Test Connection", MenuTest, "Test WiFi"));
             menu.Append(new MenuEntry("About", MenuAbout));
-            
             menu.OnInitialize = OnInit;
             menu.Run();
             return 0;
@@ -361,55 +297,51 @@ jobs:
         make clean 2>/dev/null || true
         make 2>&1 | tail -30
 
-    - name: Check result
+    - name: Find output
       run: |
         cd jisho-3gx
-        ls -la *.3gx 2>/dev/null || find . -name "*.3gx"
+        echo "=== Looking for build output ==="
+        ls -la *.3gx 2>/dev/null || echo "No 3gx in root"
+        find . -name "*.3gx" 2>/dev/null
+        find . -name "*.elf" 2>/dev/null
 
-    - name: Prepare output
+    - name: Prepare artifact
       run: |
         mkdir -p output
         cd jisho-3gx
         found=$(find . -name "*.3gx" | head -1)
         if [ -n "$found" ]; then
           cp "$found" ../output/MM3DSSearch.3gx
-          echo "BUILD SUCCESS!"
+          echo "SUCCESS: Plugin built!"
+        else
+          echo "No 3gx found"
         fi
         
         cat > ../output/README.txt << 'EOF'
-        ╔══════════════════════════════════════════════╗
-        ║   MM3DS LEVEL SEARCH v1.0 - REAL API         ║
-        ╚══════════════════════════════════════════════╝
-        
-        ✅ VRAIE API SMMDB!
+        MM3DS LEVEL SEARCH v1.0 - REAL API
+        ==================================
         
         INSTALLATION:
-        ─────────────
         EUR: /luma/plugins/0004000000165800/
         USA: /luma/plugins/0004000000164800/
         JPN: /luma/plugins/0004000000164400/
         
-        1. Active plugins dans Luma3DS (SELECT au boot)
-        2. Lance Mario Maker 3DS
-        3. SELECT pour ouvrir le menu
+        1. Enable plugins in Luma3DS (hold SELECT on boot)
+        2. Launch Mario Maker 3DS
+        3. Press SELECT in-game for menu
         
-        FONCTIONS:
-        ──────────
-        • Search by Name - Cherche par nom
-        • Search by Author - Par créateur
-        • View Results - Voir les résultats
-        • Test Connection - Test WiFi
+        FEATURES:
+        - Search by Name (real API call!)
+        - Search by Author
+        - View Results
+        - Test Connection
         
-        REQUIERT:
-        ─────────
-        ✓ Connexion WiFi active
-        ✓ Pretendo Network (optionnel)
-        
+        Requires WiFi + Pretendo Network!
         API: smmdb.net/api
         EOF
 
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: MM3DSSearch-Real-API
+        name: MM3DSSearch-RealAPI
         path: output/
